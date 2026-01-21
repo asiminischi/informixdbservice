@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  informix-service:
+    build: .
+    container_name: informix-db-service
+    env_file:
+      - .env
+    ports:
+      - "${INFORMIX_SERVICE_PORT:-4000}:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - HOST=0.0.0.0
+    # For development: mount source code for live changes
+    volumes:
+      - ./src:/app/src:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
