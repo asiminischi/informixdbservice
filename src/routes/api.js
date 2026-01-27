@@ -102,6 +102,48 @@ router.post('/query/one', async (req, res) => {
 });
 
 /**
+ * Execute INSERT, UPDATE, DELETE queries
+ * POST /api/execute
+ * Body: { sql: string }
+ */
+router.post('/execute', async (req, res) => {
+  try {
+    const { sql } = req.body;
+    
+    if (!sql) {
+      return res.status(400).json({
+        error: 'SQL statement is required',
+        code: 'MISSING_SQL'
+      });
+    }
+
+    // Only allow INSERT, UPDATE, DELETE
+    const trimmedSql = sql.trim().toUpperCase();
+    const allowedOperations = ['INSERT', 'UPDATE', 'DELETE'];
+    const operation = allowedOperations.find(op => trimmedSql.startsWith(op));
+    
+    if (!operation) {
+      return res.status(403).json({
+        error: 'Only INSERT, UPDATE, DELETE queries are allowed via this endpoint. Use /api/query for SELECT.',
+        code: 'FORBIDDEN_OPERATION'
+      });
+    }
+
+    const result = await dbService.execute(sql);
+    res.json({
+      success: true,
+      operation,
+      message: `${operation} executed successfully`
+    });
+  } catch (error) {
+    res.status(500).json(error.toJSON ? error.toJSON() : {
+      error: error.message,
+      code: 'EXECUTE_ERROR'
+    });
+  }
+});
+
+/**
  * Clear cache
  * POST /api/cache/clear
  */
@@ -161,6 +203,196 @@ router.get('/tables/:tableName/columns', async (req, res) => {
     res.status(500).json({
       error: error.message,
       code: 'QUERY_ERROR'
+    });
+  }
+});
+
+/**
+ * Insert data into a table
+ * POST /api/data/:tableName
+ * Body: { data: { column1: value1, column2: value2, ... } }
+ */
+router.post('/data/:tableName', async (req, res) => {
+  try {
+    const { tableName } = req.params;
+    const { data } = req.body;
+    
+    // Validate table name (basic protection)
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(tableName)) {
+      return res.status(400).json({
+        error: 'Invalid table name',
+        code: 'INVALID_TABLE'
+      });
+    }
+
+    if (!data || typeof data !== 'object' || Object.keys(data).length === 0) {
+      return res.status(400).json({
+        error: 'Data object is required',
+        code: 'MISSING_DATA'
+      });
+    }
+
+    // Validate column names
+    const columns = Object.keys(data);
+    for (const col of columns) {
+      if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(col)) {
+        return res.status(400).json({
+          error: `Invalid column name: ${col}`,
+          code: 'INVALID_COLUMN'
+        });
+      }
+    }
+
+    const values = columns.map(col => {
+      const val = data[col];
+      if (val === null) return 'NULL';
+      if (typeof val === 'number') return val;
+      return `'${String(val).replace(/'/g, "''")}'`;
+    });
+
+    const sql = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES (${values.join(', ')})`;
+    const result = await dbService.execute(sql);
+    
+    res.status(201).json({
+      success: true,
+      message: 'Record inserted successfully',
+      table: tableName
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: error.message,
+      code: 'INSERT_ERROR'
+    });
+  }
+});
+
+/**
+ * Update data in a table
+ * PUT /api/data/:tableName
+ * Body: { data: { column1: value1, ... }, where: { column: value } }
+ */
+router.put('/data/:tableName', async (req, res) => {
+  try {
+    const { tableName } = req.params;
+    const { data, where } = req.body;
+    
+    // Validate table name
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(tableName)) {
+      return res.status(400).json({
+        error: 'Invalid table name',
+        code: 'INVALID_TABLE'
+      });
+    }
+
+    if (!data || typeof data !== 'object' || Object.keys(data).length === 0) {
+      return res.status(400).json({
+        error: 'Data object is required',
+        code: 'MISSING_DATA'
+      });
+    }
+
+    if (!where || typeof where !== 'object' || Object.keys(where).length === 0) {
+      return res.status(400).json({
+        error: 'Where clause is required for updates',
+        code: 'MISSING_WHERE'
+      });
+    }
+
+    // Validate column names
+    const allColumns = [...Object.keys(data), ...Object.keys(where)];
+    for (const col of allColumns) {
+      if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(col)) {
+        return res.status(400).json({
+          error: `Invalid column name: ${col}`,
+          code: 'INVALID_COLUMN'
+        });
+      }
+    }
+
+    // Build SET clause
+    const setClause = Object.entries(data).map(([col, val]) => {
+      if (val === null) return `${col} = NULL`;
+      if (typeof val === 'number') return `${col} = ${val}`;
+      return `${col} = '${String(val).replace(/'/g, "''")}'`;
+    }).join(', ');
+
+    // Build WHERE clause
+    const whereClause = Object.entries(where).map(([col, val]) => {
+      if (val === null) return `${col} IS NULL`;
+      if (typeof val === 'number') return `${col} = ${val}`;
+      return `${col} = '${String(val).replace(/'/g, "''")}'`;
+    }).join(' AND ');
+
+    const sql = `UPDATE ${tableName} SET ${setClause} WHERE ${whereClause}`;
+    const result = await dbService.execute(sql);
+    
+    res.json({
+      success: true,
+      message: 'Record(s) updated successfully',
+      table: tableName
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: error.message,
+      code: 'UPDATE_ERROR'
+    });
+  }
+});
+
+/**
+ * Delete data from a table
+ * DELETE /api/data/:tableName
+ * Body: { where: { column: value } }
+ */
+router.delete('/data/:tableName', async (req, res) => {
+  try {
+    const { tableName } = req.params;
+    const { where } = req.body;
+    
+    // Validate table name
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(tableName)) {
+      return res.status(400).json({
+        error: 'Invalid table name',
+        code: 'INVALID_TABLE'
+      });
+    }
+
+    if (!where || typeof where !== 'object' || Object.keys(where).length === 0) {
+      return res.status(400).json({
+        error: 'Where clause is required for deletes (use DELETE /api/data/:tableName/all to delete all)',
+        code: 'MISSING_WHERE'
+      });
+    }
+
+    // Validate column names
+    for (const col of Object.keys(where)) {
+      if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(col)) {
+        return res.status(400).json({
+          error: `Invalid column name: ${col}`,
+          code: 'INVALID_COLUMN'
+        });
+      }
+    }
+
+    // Build WHERE clause
+    const whereClause = Object.entries(where).map(([col, val]) => {
+      if (val === null) return `${col} IS NULL`;
+      if (typeof val === 'number') return `${col} = ${val}`;
+      return `${col} = '${String(val).replace(/'/g, "''")}'`;
+    }).join(' AND ');
+
+    const sql = `DELETE FROM ${tableName} WHERE ${whereClause}`;
+    const result = await dbService.execute(sql);
+    
+    res.json({
+      success: true,
+      message: 'Record(s) deleted successfully',
+      table: tableName
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: error.message,
+      code: 'DELETE_ERROR'
     });
   }
 });

@@ -324,8 +324,85 @@ public class InformixQuery {
    * Execute an INSERT, UPDATE, or DELETE statement
    */
   async execute(sql, params = []) {
-    // For now, use the same mechanism
-    return this.simpleQuery(sql);
+    const fs = require('fs');
+    const os = require('os');
+    const { user, password } = config;
+    
+    const tempDir = os.tmpdir();
+    const javaFile = path.join(tempDir, 'InformixExecute.java');
+    const escapedSql = sql.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    
+    const javaCode = `
+import java.sql.*;
+
+public class InformixExecute {
+    public static void main(String[] args) {
+        try {
+            Class.forName("com.informix.jdbc.IfxDriver");
+            Connection conn = DriverManager.getConnection(
+                "${this.jdbcUrl}",
+                "${user}",
+                "${password}"
+            );
+            Statement stmt = conn.createStatement();
+            int rowsAffected = stmt.executeUpdate("${escapedSql}");
+            System.out.println("{\\"rowsAffected\\":" + rowsAffected + ",\\"success\\":true}");
+            stmt.close();
+            conn.close();
+        } catch (Exception e) {
+            System.err.println("ERROR: " + e.getMessage());
+            System.exit(1);
+        }
+    }
+}
+`;
+    
+    fs.writeFileSync(javaFile, javaCode);
+    
+    return new Promise((resolve, reject) => {
+      // Compile
+      const compile = spawn('javac', ['-cp', JDBC_JAR, javaFile], {
+        cwd: tempDir,
+      });
+      
+      let compileErr = '';
+      compile.stderr.on('data', (d) => compileErr += d);
+      
+      compile.on('close', (code) => {
+        if (code !== 0) {
+          reject(new Error(`Compilation failed: ${compileErr}`));
+          return;
+        }
+        
+        // Run
+        const run = spawn('java', ['-cp', `${JDBC_JAR}${path.delimiter}${tempDir}`, 'InformixExecute']);
+        
+        let stdout = '';
+        let stderr = '';
+        
+        run.stdout.on('data', (d) => stdout += d);
+        run.stderr.on('data', (d) => stderr += d);
+        
+        run.on('close', (code) => {
+          // Cleanup
+          try {
+            fs.unlinkSync(javaFile);
+            fs.unlinkSync(path.join(tempDir, 'InformixExecute.class'));
+          } catch {}
+          
+          if (code !== 0 || stderr.includes('ERROR:')) {
+            reject(new Error(stderr || 'Execute failed'));
+            return;
+          }
+          
+          try {
+            resolve(JSON.parse(stdout.trim() || '{"rowsAffected":0,"success":true}'));
+          } catch {
+            resolve({ rowsAffected: 0, success: true });
+          }
+        });
+      });
+    });
   }
 
   generateJavaQueryCode(sql, params) {
