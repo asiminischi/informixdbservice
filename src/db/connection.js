@@ -5,6 +5,7 @@
 
 const { spawn, execSync } = require('child_process');
 const path = require('path');
+const crypto = require('crypto');
 const { config } = require('../config/database');
 
 // Path to JDBC driver
@@ -212,14 +213,17 @@ class InformixConnection {
     const os = require('os');
     const { user, password } = config;
     
+    // Use unique identifier to prevent race conditions with concurrent requests
+    const uniqueId = crypto.randomUUID().replace(/-/g, '');
+    const className = `InformixQuery_${uniqueId}`;
     const tempDir = os.tmpdir();
-    const javaFile = path.join(tempDir, 'InformixQuery.java');
+    const javaFile = path.join(tempDir, `${className}.java`);
     const escapedSql = sql.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
     
     const javaCode = `
 import java.sql.*;
 
-public class InformixQuery {
+public class ${className} {
     public static void main(String[] args) {
         try {
             Class.forName("com.informix.jdbc.IfxDriver");
@@ -277,12 +281,14 @@ public class InformixQuery {
       
       compile.on('close', (code) => {
         if (code !== 0) {
+          // Cleanup on compile error
+          try { fs.unlinkSync(javaFile); } catch {}
           reject(new Error(`Compilation failed: ${compileErr}`));
           return;
         }
         
         // Run
-        const run = spawn('java', ['-cp', `${JDBC_JAR}${path.delimiter}${tempDir}`, 'InformixQuery']);
+        const run = spawn('java', ['-cp', `${JDBC_JAR}${path.delimiter}${tempDir}`, className]);
         
         let stdout = '';
         let stderr = '';
@@ -294,7 +300,7 @@ public class InformixQuery {
           // Cleanup
           try {
             fs.unlinkSync(javaFile);
-            fs.unlinkSync(path.join(tempDir, 'InformixQuery.class'));
+            fs.unlinkSync(path.join(tempDir, `${className}.class`));
           } catch {}
           
           if (code !== 0 || stderr.includes('ERROR:')) {
@@ -328,14 +334,17 @@ public class InformixQuery {
     const os = require('os');
     const { user, password } = config;
     
+    // Use unique identifier to prevent race conditions with concurrent requests
+    const uniqueId = crypto.randomUUID().replace(/-/g, '');
+    const className = `InformixExecute_${uniqueId}`;
     const tempDir = os.tmpdir();
-    const javaFile = path.join(tempDir, 'InformixExecute.java');
+    const javaFile = path.join(tempDir, `${className}.java`);
     const escapedSql = sql.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
     
     const javaCode = `
 import java.sql.*;
 
-public class InformixExecute {
+public class ${className} {
     public static void main(String[] args) {
         try {
             Class.forName("com.informix.jdbc.IfxDriver");
@@ -370,12 +379,14 @@ public class InformixExecute {
       
       compile.on('close', (code) => {
         if (code !== 0) {
+          // Cleanup on compile error
+          try { fs.unlinkSync(javaFile); } catch {}
           reject(new Error(`Compilation failed: ${compileErr}`));
           return;
         }
         
         // Run
-        const run = spawn('java', ['-cp', `${JDBC_JAR}${path.delimiter}${tempDir}`, 'InformixExecute']);
+        const run = spawn('java', ['-cp', `${JDBC_JAR}${path.delimiter}${tempDir}`, className]);
         
         let stdout = '';
         let stderr = '';
@@ -387,7 +398,7 @@ public class InformixExecute {
           // Cleanup
           try {
             fs.unlinkSync(javaFile);
-            fs.unlinkSync(path.join(tempDir, 'InformixExecute.class'));
+            fs.unlinkSync(path.join(tempDir, `${className}.class`));
           } catch {}
           
           if (code !== 0 || stderr.includes('ERROR:')) {
